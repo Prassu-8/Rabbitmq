@@ -1,0 +1,35 @@
+{
+  "rabbitmq": {
+    "amqp": {
+      "host": "localhost",
+      "port": 5672,
+      "vhost": "transport",
+      "username": "Main_user123",
+      "password": "Dev@ps231",
+      "exchange": "transport.events"
+    },
+    "routing_keys": {
+      "transport_request_created_v1": "transport.request.created.v1",
+      "transport_request_accepted_v1": "transport.request.accepted.v1"
+    },
+    "queues": {
+      "request_projection_v1": "q.transport.request.projection.v1",
+      "acceptance_handler_v1": "q.transport.request.accepted.v1"
+    },
+    "management": {
+      "comment" :"#rmq-prod",           
+      "host": "localhost", 
+      "port": 15672,
+      "username": "Main_user123",
+      "password": "Dev@ps231"
+    }
+  },
+  "postgresql":{
+    "Host": "localhost",
+    "Port": 5433,
+    "user":"postgres",
+    "Database name": "brokerdb",
+    "Password": "Alekya@54321"
+
+  }
+}
