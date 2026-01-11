@@ -1,0 +1,123 @@
+transport_demo/
+├── api/
+│   ├── router.py
+│   ├── schemas.py   👈 HERE
+│   └── dependencies.py
+├── services/
+├── rabbitmq_client.py
+├── config_loader.py
+
+
+
+POSTMAN / CLIENT
+        ↓
+FastAPI Router
+        ↓
+Pydantic Schemas (schemas.py)
+        ↓
+TransportRequestService
+        ↓
+Postgres (write)
+        ↓
+RabbitMQ (publish event)
+
+
+
+==========config.py
+"""
+RABBITMQ_URL = os.environ.get("TRANSPORT_RABBITMQ_URL", "amqp://guest:guest@localhost:5672/%2F")
+EXCHANGE_NAME = os.environ.get("TRANSPORT_EXCHANGE", "x.commands")
+EXCHANGE_COMMANDS = EXCHANGE_NAME  # friendly alias from the design doc
+OFFER_ROUTING_KEY = os.environ.get("TRANSPORT_OFFER_ROUTING_KEY", "delhi.offer.create")
+ROUTING_KEY_OFFER_CREATE = OFFER_ROUTING_KEY
+OFFER_QUEUE = os.environ.get("TRANSPORT_OFFER_QUEUE", "q.delhi.offer")
+QUEUE_OFFER_DELHI = OFFER_QUEUE
+"""
+
+==========rabbitmq_client.py
+'''''-------- Rabbitmq based on slef channel----
+try:  # pragma: no cover - optional dependency during tests
+    import pika  # type: ignore
+    
+except ImportError:  # pragma: no cover
+    pika = None  # type: ignore
+from . config import EXCHANGE_NAME, OFFER_QUEUE, OFFER_ROUTING_KEY, RABBITMQ_URL
+class RabbitMQClient:
+    
+    def __init__( 
+        self,
+        url: str = RABBITMQ_URL,
+        exchange: str = EXCHANGE_NAME,
+        offer_routing_key: str = OFFER_ROUTING_KEY,
+        offer_queue: str = OFFER_QUEUE,
+    ) -> None:
+        if pika is None:  # pragma: no cover - raised only when pika missing
+            raise RuntimeError("pika is required to use RabbitMQClient")
+        self.parameters = pika.URLParameters(url)
+        self.exchange = exchange
+        self.offer_routing_key = offer_routing_key
+        self.offer_queue = offer_queue
+        self.connection: Optional[object] = None
+        self.channel: Optional[object] = None
+
+
+    def connect(self) -> None:
+        if self.connection and self.connection.is_open:  # type: ignore[union-attr]
+            return
+        self.connection = pika.BlockingConnection(self.parameters)
+        self.channel = self.connection.channel()
+        self._setup_entities()
+
+    def close(self) -> None:
+        if self.connection and self.connection.is_open:  # type: ignore[union-attr]
+            self.connection.close()
+            self.connection = None
+            self.channel = None
+
+    def _setup_entities(self) -> None:
+        if not self.channel:
+            raise RuntimeError("RabbitMQ channel is not initialised")
+        self.channel.exchange_declare(exchange=self.exchange, exchange_type="topic", durable=True)
+        self.channel.queue_declare(queue=self.offer_queue, durable=True)
+        self.channel.queue_bind(
+            queue=self.offer_queue,
+            exchange=self.exchange,
+            routing_key=self.offer_routing_key,
+        )
+
+    def publish_offer_create(self, ride_id: int, attempt_no: int, city: str, area: str) -> None:
+        if not self.channel:
+            self.connect()
+        payload = {
+            "ride_id": ride_id,
+            "attempt_no": attempt_no,
+            "city": city,
+            "area": area,
+        }
+        body = json.dumps(payload)
+        assert self.channel is not None
+        self.channel.basic_publish(
+            exchange=self.exchange,
+            routing_key=self.offer_routing_key,
+            body=body,
+            properties=pika.BasicProperties(content_type="application/json", delivery_mode=2),
+        )
+
+    def consume_offer_create(self, callback: Callable[[dict], None]) -> None:
+        if not self.channel:
+            self.connect()
+        assert self.channel is not None
+
+        def _wrapped(channel, method, properties, body):
+            try:
+                payload = json.loads(body)
+                callback(payload)
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            except Exception:  # pragma: no cover - best effort ack handling
+                channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                raise
+
+        self.channel.basic_qos(prefetch_count=1)
+        self.channel.basic_consume(queue=self.offer_queue, on_message_callback=_wrapped)
+        self.channel.start_consuming()
+'''''
